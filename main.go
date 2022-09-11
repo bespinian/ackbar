@@ -21,6 +21,10 @@ func main() {
 	router.DELETE("/contexts/:contextId", api.DeleteContext)
 	router.GET("/contexts/:contextId/partitions", api.GetPartitions)
 	router.POST("/contexts/:contextId/partitions", api.PostPartition)
+	router.DELETE("/contexts/:contextId/partitions/:partitionId", api.DeletePartition)
 
+	router.POST("/contexts/:contextId/leases", api.PostLease)
+	router.PUT("/contexts/:contextId/partitions/:partitionId/leases/:leaseId", api.PutLease)
+	router.DELETE("/contexts/:contextId/partitions/:partitionId/leases/:leaseId", api.DeleteLease)
 	router.Run("localhost:8080")
 }
