@@ -21,3 +21,12 @@ func (a *Api) PostPartition(c *gin.Context) {
 	createdPartition, _ := a.Backend.AddPartition(uuid)
 	c.IndentedJSON(http.StatusCreated, createdPartition)
 }
+
+func (a *Api) DeletePartition(c *gin.Context) {
+	contextId := c.Param("contextId")
+	partitionId := c.Param("partitionId")
+	contextUuid, _ := uuid.Parse(contextId)
+	partitionUuid, _ := uuid.Parse(partitionId)
+	a.Backend.DeletePartition(contextUuid, partitionUuid)
+	c.Status(http.StatusOK)
+}
