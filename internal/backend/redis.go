@@ -170,7 +170,8 @@ func getModelList[M model.Model](indexName string, b *RedisBackend, keyPrefix st
 
 func getModel[M model.Model](keyPattern string, b *RedisBackend, ids ...uuid.UUID) (M, bool, error) {
 	var result M
-	stringRep, err := b.redis.Get(ctx, fmt.Sprintf(keyPattern, ids)).Result()
+	idStrings := uuidsToStrings(ids)
+	stringRep, err := b.redis.Get(ctx, fmt.Sprintf(keyPattern, idStrings...)).Result()
 	if err != nil {
 		return result, false, err
 	}
