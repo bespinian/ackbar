@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -58,6 +59,7 @@ func (b *RedisBackend) DeleteContext(id uuid.UUID) error {
 }
 
 func (b *RedisBackend) GetPartitions(contextId uuid.UUID) ([]model.Partition, error) {
+	result := []model.Partition{}
 	partitions, err := getModelList[model.Partition](partitionsKeyIndexName, b, "")
 	if err != nil {
 		return partitions, err
@@ -66,11 +68,14 @@ func (b *RedisBackend) GetPartitions(contextId uuid.UUID) ([]model.Partition, er
 		leaseKeyPrefix := fmt.Sprintf(partitionKeyPattern, partition.ContextID, partition.GetID())
 		leases, err := getModelList[model.Lease](leasesKeyIndexName, b, leaseKeyPrefix)
 		if err != nil {
+			log.Println(fmt.Sprintf("error getting leases with key prefix %s: %s", leaseKeyPrefix, err))
 			return partitions, err
 		}
-		partition.Leases = leases
+		log.Println(fmt.Sprintf("%d leases found", len(leases)))
+		partition.Leases = append(partition.Leases, leases...)
+		result = append(result, partition)
 	}
-	return partitions, nil
+	return result, nil
 }
 
 func (b *RedisBackend) AddPartition(contextId uuid.UUID) (model.Partition, error) {
@@ -93,10 +98,12 @@ func (b *RedisBackend) DeletePartition(contextId, partitionId uuid.UUID) error {
 func (b *RedisBackend) CreateLease(contextId uuid.UUID) (model.Lease, bool, error) {
 	context, _, err := b.GetContext(contextId)
 	if err != nil {
+		log.Println(fmt.Sprintf("error getting context with id %s", contextId))
 		return model.Lease{}, false, err
 	}
 	partitions, err := b.GetPartitions(contextId)
 	if err != nil {
+		log.Println(fmt.Sprintf("error getting partitions for context with id %s", contextId))
 		return model.Lease{}, false, err
 	}
 	var createdLease model.Lease
@@ -147,22 +154,24 @@ func (b *RedisBackend) DeleteLease(contextId, partitionId, leaseId uuid.UUID) er
 }
 
 func getModelList[M model.Model](indexName string, b *RedisBackend, keyPrefix string) ([]M, error) {
-	var result []M
+	result := []M{}
 	keys, err := b.redis.SMembers(ctx, indexName).Result()
 	if err != nil {
-		return result, err
+		keys = []string{}
 	}
 	for _, key := range keys {
 		if strings.HasPrefix(key, keyPrefix) {
 			stringRep, err := b.redis.Get(ctx, key).Result()
 			if err != nil {
-				return result, err
+				log.Println(fmt.Sprintf("removing stale key %s from index %s", key, indexName))
+				b.redis.SRem(ctx, indexName, key)
+			} else {
+				model, err := stringToModel[M](stringRep)
+				if err != nil {
+					return result, err
+				}
+				result = append(result, model)
 			}
-			model, err := stringToModel[M](stringRep)
-			if err != nil {
-				return result, err
-			}
-			result = append(result, model)
 		}
 	}
 	return result, nil
@@ -173,6 +182,7 @@ func getModel[M model.Model](keyPattern string, b *RedisBackend, ids ...uuid.UUI
 	idStrings := uuidsToStrings(ids)
 	stringRep, err := b.redis.Get(ctx, fmt.Sprintf(keyPattern, idStrings...)).Result()
 	if err != nil {
+		log.Println(fmt.Sprintf("error getting model with key %s", fmt.Sprintf(keyPattern, idStrings...)))
 		return result, false, err
 	}
 	result, err = stringToModel[M](stringRep)
@@ -188,6 +198,7 @@ func createModel[M model.Model](model M, indexName, keyPattern string, ttlSecond
 	key := fmt.Sprintf(keyPattern, idStrings...)
 	stringRep, err := modelToStr(model)
 	if err != nil {
+		log.Println("error when transforming model to string")
 		return model, err
 	}
 	b.redis.SAdd(ctx, indexName, key)
