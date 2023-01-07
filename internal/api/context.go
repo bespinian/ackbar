@@ -1,16 +1,20 @@
 package api
 
 import (
+	"fmt"
+	"log"
 	"net/http"
 
 	"github.com/bespinian/lando/internal/model"
 	"github.com/gin-gonic/gin"
+	"github.com/go-http-utils/headers"
 	"github.com/google/uuid"
 )
 
-var contexts = []model.Context{
-	{ID: uuid.New(), Name: "Sensors", LeaseTimeSeconds: 1},
-}
+var RootPath = "/"
+var ContextsPath = fmt.Sprintf("%s%s", RootPath, "contexts")
+var ContextIdPlaceholder = ":contextId"
+var ContextPath = fmt.Sprintf("%s/%s", ContextsPath, ContextIdPlaceholder)
 
 func (a *Api) GetContexts(c *gin.Context) {
 	contexts, _ := a.Backend.GetContexts()
@@ -31,13 +35,17 @@ func (a *Api) PostContext(c *gin.Context) {
 		return
 	}
 
-	createdContext, _ := a.Backend.CreateContext(newContext.Name, newContext.LeaseTimeSeconds, newContext.MaxLeasesPerPartition)
+	createdContext, _ := a.Backend.CreateContext(newContext.Name, newContext.LivenessIntervalSeconds, newContext.MaxPartitionsPerWorker)
+	c.Header(headers.Location, a.replaceIDPlaceholders(ContextPath, ContextIdPlaceholder, createdContext.ID))
 	c.IndentedJSON(http.StatusCreated, createdContext)
 }
 
 func (a *Api) DeleteContext(c *gin.Context) {
 	id := c.Param("contextId")
 	uuid, _ := uuid.Parse(id)
-	a.Backend.DeleteContext(uuid)
+	err := a.Backend.DeleteContext(uuid)
+	if err != nil {
+		log.Printf("Error deleting context %s: %e", uuid, err)
+	}
 	c.Status(http.StatusOK)
 }

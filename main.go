@@ -1,9 +1,10 @@
 package main
 
 import (
+	"log"
 	"os"
 
-	"github.com/bespinian/lando/internal/api"
+	apimodule "github.com/bespinian/lando/internal/api"
 	"github.com/bespinian/lando/internal/backend"
 	"github.com/gin-gonic/gin"
 )
@@ -11,20 +12,24 @@ import (
 func main() {
 	redisBackend := backend.RedisBackend{}
 	redisBackend.Initialize(os.Getenv("REDIS_CONNECTION_STRING"), "", 0)
-	api := api.Api{Backend: &redisBackend}
+	api := apimodule.Api{Backend: &redisBackend}
 
 	router := gin.Default()
-	router.GET("/", api.GetInfo)
-	router.GET("/contexts", api.GetContexts)
-	router.POST("/contexts", api.PostContext)
-	router.GET("/contexts/:contextId", api.GetContext)
-	router.DELETE("/contexts/:contextId", api.DeleteContext)
-	router.GET("/contexts/:contextId/partitions", api.GetPartitions)
-	router.POST("/contexts/:contextId/partitions", api.PostPartition)
-	router.DELETE("/contexts/:contextId/partitions/:partitionId", api.DeletePartition)
+	router.GET(apimodule.RootPath, api.GetInfo)
+	router.GET(apimodule.ContextsPath, api.GetContexts)
+	router.POST(apimodule.ContextsPath, api.PostContext)
+	router.GET(apimodule.ContextPath, api.GetContext)
+	router.DELETE(apimodule.ContextPath, api.DeleteContext)
+	router.GET(apimodule.PartitionsPath, api.GetPartitions)
+	router.POST(apimodule.PartitionsPath, api.PostPartition)
+	router.DELETE(apimodule.PartitionPath, api.DeletePartition)
 
-	router.POST("/contexts/:contextId/leases", api.PostLease)
-	router.PUT("/contexts/:contextId/partitions/:partitionId/leases/:leaseId", api.PutLease)
-	router.DELETE("/contexts/:contextId/partitions/:partitionId/leases/:leaseId", api.DeleteLease)
-	router.Run("localhost:8080")
+	router.POST(apimodule.WorkersPath, api.PostWorker)
+	router.GET(apimodule.WorkersPath, api.GetWorkers)
+	router.PUT(apimodule.WorkerPath, api.PutWorker)
+	router.DELETE(apimodule.WorkerPath, api.DeleteWorker)
+	err := router.Run("localhost:8080")
+	if err != nil {
+		log.Fatalf("Error running http router: %e", err)
+	}
 }
