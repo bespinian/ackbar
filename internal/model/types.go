@@ -16,10 +16,11 @@ type Model interface {
 }
 
 type Context struct {
-	ID                    uuid.UUID `json:"id"`
-	Name                  string    `json:"name"`
-	LeaseTimeSeconds      int       `json:"leaseTimeSeconds"`
-	MaxLeasesPerPartition int       `json:"maxLeasesPerPartition"`
+	ID                      uuid.UUID `json:"id"`
+	Name                    string    `json:"name"`
+	LivenessIntervalSeconds int       `json:"livenessIntervalSeconds"`
+	MaxPartitionsPerWorker  int       `json:"maxPartitionsPerWorker"`
+	PartitionToWorkerRatio  float64   `json:"partitionToWorkerRatio"`
 }
 
 func (c Context) GetID() uuid.UUID {
@@ -27,23 +28,24 @@ func (c Context) GetID() uuid.UUID {
 }
 
 type Partition struct {
-	ID        uuid.UUID `json:"id"`
-	ContextID uuid.UUID `json:"contextID"`
-	Leases    []Lease
+	ID             uuid.UUID `json:"id"`
+	ContextID      uuid.UUID `json:"contextID"`
+	AssignedWorker uuid.UUID `json:"assignedWorker"`
+	Configuration  string    `json:"configuration"`
 }
 
 func (c Partition) GetID() uuid.UUID {
 	return c.ID
 }
 
-type Lease struct {
-	ID          uuid.UUID `json:"id"`
-	ContextID   uuid.UUID `json:"contextID"`
-	PartitionID uuid.UUID `json:"partitionID"`
-	CreatedAt   time.Time `json:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+type Worker struct {
+	ID                      uuid.UUID `json:"id"`
+	ContextID               uuid.UUID `json:"contextID"`
+	RegisteredAt            time.Time `json:"registeredAt"`
+	RefreshedAt             time.Time `json:"refreshedAt"`
+	PartitionConfigurations []string  `json:"partitionConfiguration"`
 }
 
-func (c Lease) GetID() uuid.UUID {
-	return c.ID
+func (w Worker) GetID() uuid.UUID {
+	return w.ID
 }
