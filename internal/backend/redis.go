@@ -5,20 +5,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/bespinian/lando/internal/model"
-	redis "github.com/go-redis/redis/v9"
 	"github.com/google/uuid"
+	redis "github.com/redis/go-redis/v9"
 )
 
 const contextsKeyIndexName = "contexts:index"
 const contextKeyPattern = "contexts:%s"
 const partitionsKeyIndexName = "partitions:index"
 const partitionKeyPattern = "contexts:%s:partitions:%s"
-const leasesKeyIndexName = "leases:index"
-const leaseKeyPattern = "contexts:%s:partitions:%s:leases:%s"
+const workersKeyIndexName = "workers:index"
+const workersKeyPattern = "contexts:%s:workers:%s"
+const workersKeyRegex = `contexts:([a-f|A-F|\d|-]+):workers:([a-f|A-F|\d|-]+)`
 
 var ctx = context.Background()
 
@@ -32,19 +34,85 @@ func (b *RedisBackend) Initialize(address, password string, db int) {
 		Password: password,
 		DB:       db,
 	})
+
+	b.redis.WithTimeout(0)
+
+	_, err := b.redis.Do(context.Background(), "CONFIG", "SET", "notify-keyspace-events", "KEA").Result()
+	if err != nil {
+		log.Fatalf("Could not initialize pub/sub in Redis backend: %e", err)
+	}
+
+	// tracking worker liveness requires listening to key expirations
+	pubsub := b.redis.PSubscribe(context.Background(), "__keyevent@0__:expired")
+
+	// workers are expired by Redis, so expirations might have been missed during downtime. Catch up now.
+	b.handleMissedWorkerExpirations()
+
+	go func(*redis.PubSub) {
+		expirations := pubsub.Channel()
+		for {
+			message := <-expirations
+			b.handleWorkerExpiration(message.String())
+		}
+	}(pubsub)
+}
+
+func (b *RedisBackend) handleWorkerExpiration(workerKey string) {
+	r, err := regexp.Compile(workersKeyRegex)
+	if err != nil {
+		log.Printf("Could not compile worker key regex: %e", err)
+	}
+	contextId := r.FindStringSubmatch(workerKey)[1]
+	contextIdUuid, err := uuid.Parse(contextId)
+	if err != nil {
+		log.Printf("Error parsing context id %s as a UUID: %e", contextId, err)
+	}
+	workerId := r.FindStringSubmatch(workerKey)[2]
+	workerIdUuid, err := uuid.Parse(workerId)
+	if err != nil {
+		log.Printf("Error parsing worker id %s as a UUID: %e", contextId, err)
+	}
+	log.Printf("Expiration of worker %s in context %s", workerId, contextId)
+	err = b.unassignWorkerFromAllPartitions(contextIdUuid, workerIdUuid)
+	if err != nil {
+		log.Printf("Error unsassigning worker %s from all partitions in context %s", workerId, contextId)
+	}
 }
 
 func (b *RedisBackend) GetContexts() ([]model.Context, error) {
-	return getModelList[model.Context](contextsKeyIndexName, b, "")
+	contexts, err := getModelList[model.Context](contextsKeyIndexName, b, "")
+	if err != nil {
+		return []model.Context{}, err
+	}
+	for _, context := range contexts {
+		err := b.addPartitionToWorkerRatio(&context, context.MaxPartitionsPerWorker)
+		if err != nil {
+			return []model.Context{}, err
+		}
+	}
+	return contexts, nil
+}
+
+func (b *RedisBackend) addPartitionToWorkerRatio(context *model.Context, maxPartitionsPerWorker int) error {
+	ratio, err := b.partitionToWorkerRatio(context.ID, maxPartitionsPerWorker)
+	if err != nil {
+		return err
+	}
+	context.PartitionToWorkerRatio = ratio
+	return nil
 }
 
 func (b *RedisBackend) GetContext(id uuid.UUID) (model.Context, bool, error) {
-	return getModel[model.Context](contextKeyPattern, b, id)
+	context, found, err := getModel[model.Context](contextKeyPattern, b, id)
+	if err == nil && found {
+		err = b.addPartitionToWorkerRatio(&context, context.MaxPartitionsPerWorker)
+	}
+	return context, found, err
 }
 
-func (b *RedisBackend) CreateContext(name string, leaseTimeSeconds, maxLeasesPerPartition int) (model.Context, error) {
-	context := model.Context{ID: uuid.New(), Name: name, LeaseTimeSeconds: leaseTimeSeconds, MaxLeasesPerPartition: maxLeasesPerPartition}
-	return createModel(context, contextsKeyIndexName, contextKeyPattern, 0, b, context.ID)
+func (b *RedisBackend) CreateContext(name string, livenessIntervalSeconds, maxPartitionsPerWorker int) (model.Context, error) {
+	context := model.Context{ID: uuid.New(), Name: name, LivenessIntervalSeconds: livenessIntervalSeconds, MaxPartitionsPerWorker: maxPartitionsPerWorker}
+	return createOrUpdateModel(context, contextsKeyIndexName, contextKeyPattern, 0, b, context.ID)
 }
 
 func (b *RedisBackend) DeleteContext(id uuid.UUID) error {
@@ -53,104 +121,184 @@ func (b *RedisBackend) DeleteContext(id uuid.UUID) error {
 		return err
 	}
 	for _, partition := range partitions {
-		b.DeletePartition(id, partition.ID)
+		err = b.DeletePartition(id, partition.ID)
+		if err != nil {
+			log.Printf("Error deleting partition %s in context %s: %e", partition.ID, id, err)
+		}
 	}
 	return deleteModel(contextsKeyIndexName, contextKeyPattern, b, id)
 }
 
 func (b *RedisBackend) GetPartitions(contextId uuid.UUID) ([]model.Partition, error) {
-	result := []model.Partition{}
-	partitions, err := getModelList[model.Partition](partitionsKeyIndexName, b, "")
+	partitionsKeyPrefix := fmt.Sprintf(contextKeyPattern, contextId)
+	partitions, err := getModelList[model.Partition](partitionsKeyIndexName, b, partitionsKeyPrefix)
 	if err != nil {
 		return partitions, err
 	}
-	for _, partition := range partitions {
-		leaseKeyPrefix := fmt.Sprintf(partitionKeyPattern, partition.ContextID, partition.GetID())
-		leases, err := getModelList[model.Lease](leasesKeyIndexName, b, leaseKeyPrefix)
-		if err != nil {
-			log.Println(fmt.Sprintf("error getting leases with key prefix %s: %s", leaseKeyPrefix, err))
-			return partitions, err
-		}
-		log.Println(fmt.Sprintf("%d leases found", len(leases)))
-		partition.Leases = append(partition.Leases, leases...)
-		result = append(result, partition)
-	}
-	return result, nil
+	return partitions, nil
 }
 
-func (b *RedisBackend) AddPartition(contextId uuid.UUID) (model.Partition, error) {
-	partition := model.Partition{ID: uuid.New(), ContextID: contextId}
-	return createModel(partition, partitionsKeyIndexName, partitionKeyPattern, 0, b, contextId, partition.ID)
+func (b *RedisBackend) GetPartition(contextId, partitionId uuid.UUID) (model.Partition, bool, error) {
+	context, found, err := getModel[model.Partition](partitionKeyPattern, b, contextId, partitionId)
+	return context, found, err
+}
+
+func (b *RedisBackend) AddPartition(contextId uuid.UUID, configuration string) (model.Partition, error) {
+	_, _, err := b.GetContext(contextId)
+	if err != nil {
+		log.Printf("error getting context with id %s", contextId)
+		return model.Partition{}, err
+	}
+	partition := model.Partition{ID: uuid.New(), ContextID: contextId, Configuration: configuration}
+	partition, err = b.assignWorkerIfPossible(contextId, partition)
+	if err != nil {
+		log.Printf("error assigning a worker with free capacity for partition %s context with id %s", partition.ID, contextId)
+		return model.Partition{}, err
+	}
+	return createOrUpdateModel(partition, partitionsKeyIndexName, partitionKeyPattern, 0, b, contextId, partition.ID)
+}
+
+func (b *RedisBackend) assignWorkerIfPossible(contextId uuid.UUID, partition model.Partition) (model.Partition, error) {
+	unassignedWorkers, err := b.getWorkersWithFreeCapacity(contextId)
+	if err != nil {
+		log.Printf("error getting workers with free capacity for context with id %s", contextId)
+		return model.Partition{}, err
+	}
+	if len(unassignedWorkers) > 0 {
+		// there are workers with free capacity. Assign the first one that was found.
+		worker := unassignedWorkers[0]
+		partition.AssignedWorker = worker.ID
+	}
+	return partition, nil
 }
 
 func (b *RedisBackend) DeletePartition(contextId, partitionId uuid.UUID) error {
-	leaseKeyPrefix := fmt.Sprintf(partitionKeyPattern, contextId, partitionId)
-	leases, err := getModelList[model.Lease](leasesKeyIndexName, b, leaseKeyPrefix)
+	_, _, err := b.GetContext(contextId)
 	if err != nil {
+		log.Printf("error getting context with id %s", contextId)
 		return err
-	}
-	for _, lease := range leases {
-		deleteModel(leasesKeyIndexName, leaseKeyPattern, b, contextId, partitionId, lease.ID)
 	}
 	return deleteModel(partitionsKeyIndexName, partitionKeyPattern, b, contextId, partitionId)
 }
 
-func (b *RedisBackend) CreateLease(contextId uuid.UUID) (model.Lease, bool, error) {
+func (b *RedisBackend) RegisterWorker(contextId uuid.UUID) (model.Worker, error) {
 	context, _, err := b.GetContext(contextId)
 	if err != nil {
-		log.Println(fmt.Sprintf("error getting context with id %s", contextId))
-		return model.Lease{}, false, err
+		log.Printf("error getting context with id %s", contextId)
+		return model.Worker{}, err
 	}
-	partitions, err := b.GetPartitions(contextId)
-	if err != nil {
-		log.Println(fmt.Sprintf("error getting partitions for context with id %s", contextId))
-		return model.Lease{}, false, err
-	}
-	var createdLease model.Lease
-	created := false
-	for _, partition := range partitions {
-		if len(partition.Leases) < context.MaxLeasesPerPartition {
-			now := time.Now()
-			lease := model.Lease{ID: uuid.New(), ContextID: contextId, PartitionID: partition.ID, CreatedAt: now, UpdatedAt: now}
-			createdLease, err = createModel(lease, leasesKeyIndexName, leaseKeyPattern, context.LeaseTimeSeconds, b, contextId, partition.ID, lease.ID)
+
+	now := time.Now()
+	worker := model.Worker{ID: uuid.New(), ContextID: contextId, RegisteredAt: now, RefreshedAt: now}
+	partitionConfigurations := []string{}
+	for i := 0; i < context.MaxPartitionsPerWorker; i++ {
+		partitions, err := b.getUnassignedPartitions(contextId)
+		if err != nil {
+			log.Printf("error getting unassigned partitions for context with id %s", contextId)
+			return model.Worker{}, err
+		}
+		if len(partitions) > 0 {
+			// there are unassigned partitions. Assign the new worker to the first one that was found
+			partitions[0].AssignedWorker = worker.ID
+			partitionConfigurations = append(partitionConfigurations, partitions[0].Configuration)
+			_, err := createOrUpdateModel(partitions[0], partitionsKeyIndexName, partitionKeyPattern, 0, b, contextId, partitions[0].ID)
 			if err != nil {
-				return model.Lease{}, false, err
+				return model.Worker{}, err
 			}
-			created = true
-			break
 		}
 	}
-	return createdLease, created, nil
+	createdWorker, err := createOrUpdateModel(worker, workersKeyIndexName, workersKeyPattern, context.LivenessIntervalSeconds, b, contextId, worker.ID)
+	createdWorker.PartitionConfigurations = partitionConfigurations
+	if err != nil {
+		return model.Worker{}, err
+	}
+	return createdWorker, nil
 }
 
-func (b *RedisBackend) RefreshLease(contextId, partitionId, leaseId uuid.UUID) (model.Lease, bool, error) {
+func (b *RedisBackend) RefreshWorker(contextId, workerId uuid.UUID) (model.Worker, bool, error) {
 	context, _, err := b.GetContext(contextId)
 	if err != nil {
-		return model.Lease{}, false, err
+		return model.Worker{}, false, err
 	}
-	lease, found, err := getModel[model.Lease](leaseKeyPattern, b, contextId, partitionId, leaseId)
+	worker, found, err := getModel[model.Worker](workersKeyPattern, b, contextId, workerId)
 	if err != nil {
-		return model.Lease{}, false, err
+		return model.Worker{}, false, err
 	}
-	var refreshedLease model.Lease
+	var refreshedWorker model.Worker
 	refreshed := false
 	if found {
-		lease.UpdatedAt = time.Now()
-		refreshedLease, err = createModel(lease, leasesKeyIndexName, leaseKeyPattern, context.LeaseTimeSeconds, b, contextId, lease.PartitionID, lease.ID)
+		worker.RefreshedAt = time.Now()
+		refreshedWorker, err = createOrUpdateModel(worker, workersKeyIndexName, workersKeyPattern, context.LivenessIntervalSeconds, b, contextId, worker.ID)
+		refreshed = true
 		if err != nil {
-			return model.Lease{}, false, err
+			return model.Worker{}, false, err
 		}
 	} else {
-		refreshedLease, refreshed, err = b.CreateLease(contextId)
+		refreshedWorker, err = b.RegisterWorker(contextId)
 		if err != nil {
-			return model.Lease{}, false, err
+			return model.Worker{}, false, err
 		}
 	}
-	return refreshedLease, refreshed, nil
+	updatedWorkers, err := b.addAssignedPartitionConfigurations(contextId, []model.Worker{refreshedWorker})
+	if err != nil {
+		log.Printf("Failed to get partition configurations for worker %s in context %s", workerId, contextId)
+		return model.Worker{}, false, err
+	}
+	return updatedWorkers[0], refreshed, nil
 }
 
-func (b *RedisBackend) DeleteLease(contextId, partitionId, leaseId uuid.UUID) error {
-	return deleteModel(leasesKeyIndexName, leaseKeyPattern, b, contextId, partitionId, leaseId)
+func (b *RedisBackend) GetWorkers(contextId uuid.UUID) ([]model.Worker, error) {
+	workersKeyPrefix := fmt.Sprintf(contextKeyPattern, contextId)
+	workers, err := getModelList[model.Worker](workersKeyIndexName, b, workersKeyPrefix)
+	if err != nil {
+		return workers, err
+	}
+	workers, err = b.addAssignedPartitionConfigurations(contextId, workers)
+	if err != nil {
+		return workers, err
+	}
+	return workers, nil
+}
+
+func (b *RedisBackend) GetWorker(contextId, workerId uuid.UUID) (model.Worker, bool, error) {
+	worker, found, err := getModel[model.Worker](partitionKeyPattern, b, contextId, workerId)
+	if err != nil {
+		log.Printf("Error when looking up worker %s in context %s: %e", workerId, contextId, err)
+	}
+	updatedWorkers, err := b.addAssignedPartitionConfigurations(contextId, []model.Worker{worker})
+	return updatedWorkers[0], found, err
+}
+
+func (b *RedisBackend) DeleteWorker(contextId, workerId uuid.UUID) error {
+	err := deleteModel(workersKeyIndexName, workersKeyPattern, b, contextId, workerId)
+	if err != nil {
+		log.Printf("error deleting worker %s in context %s", workerId, contextId)
+		return err
+	}
+	return b.unassignWorkerFromAllPartitions(contextId, workerId)
+}
+
+func (b *RedisBackend) unassignWorkerFromAllPartitions(contextId, workerId uuid.UUID) error {
+	assignedPartitions, err := b.getAssignedPartitions(contextId, workerId)
+	if err != nil {
+		log.Printf("error getting partitions assigned to worker %s in context %s", workerId, contextId)
+		return err
+	}
+	// unassign the worker from all partitions
+	for _, partition := range assignedPartitions {
+		partition.AssignedWorker = uuid.Nil
+		partition, err = b.assignWorkerIfPossible(contextId, partition)
+		if err != nil {
+			log.Printf("error unsassigning worker %s from partition %s in context %s", workerId, partition.ID, contextId)
+			return err
+		}
+		_, err := createOrUpdateModel(partition, partitionsKeyIndexName, partitionKeyPattern, 0, b, contextId, partition.ID)
+		if err != nil {
+			log.Printf("error saving partition %s in context %s", partition.ID, contextId)
+			return err
+		}
+	}
+	return nil
 }
 
 func getModelList[M model.Model](indexName string, b *RedisBackend, keyPrefix string) ([]M, error) {
@@ -163,7 +311,7 @@ func getModelList[M model.Model](indexName string, b *RedisBackend, keyPrefix st
 		if strings.HasPrefix(key, keyPrefix) {
 			stringRep, err := b.redis.Get(ctx, key).Result()
 			if err != nil {
-				log.Println(fmt.Sprintf("removing stale key %s from index %s", key, indexName))
+				log.Printf("removing stale key %s from index %s", key, indexName)
 				b.redis.SRem(ctx, indexName, key)
 			} else {
 				model, err := stringToModel[M](stringRep)
@@ -177,12 +325,161 @@ func getModelList[M model.Model](indexName string, b *RedisBackend, keyPrefix st
 	return result, nil
 }
 
+func (b *RedisBackend) handleMissedWorkerExpirations() []string {
+	result := []string{}
+	keys, err := b.redis.SMembers(ctx, workersKeyIndexName).Result()
+	if err != nil {
+		log.Printf("Could not load keys from index %s", workersKeyIndexName)
+		keys = []string{}
+	}
+	for _, key := range keys {
+		_, err := b.redis.Get(ctx, key).Result()
+		if err != nil {
+			log.Printf("Missed worker expiration for %s, expiring worker now", key)
+			b.handleWorkerExpiration(key)
+			b.redis.SRem(ctx, workersKeyIndexName, key)
+		}
+	}
+
+	return result
+}
+
+func (b *RedisBackend) getAssignedWorker(contextId, partitionId uuid.UUID) (uuid.UUID, error) {
+	partition, found, err := b.GetPartition(contextId, partitionId)
+	if !found {
+		return uuid.Nil, fmt.Errorf("Partition with id %s does not exists", partitionId)
+	}
+	if err != nil {
+		return uuid.Nil, err
+	}
+	return partition.AssignedWorker, nil
+}
+
+func (b *RedisBackend) getUnassignedPartitions(contextId uuid.UUID) ([]model.Partition, error) {
+	result := []model.Partition{}
+	partitionsKeyPrefix := fmt.Sprintf(contextKeyPattern, contextId)
+	partitions, err := getModelList[model.Partition](partitionsKeyIndexName, b, partitionsKeyPrefix)
+	if err != nil {
+		return result, err
+	}
+	for _, partition := range partitions {
+		worker, err := b.getAssignedWorker(contextId, partition.ID)
+		if err != nil {
+			return result, err
+		}
+		if worker == uuid.Nil {
+			result = append(result, partition)
+		}
+	}
+	return result, nil
+
+}
+
+func (b *RedisBackend) getWorkersWithFreeCapacity(contextId uuid.UUID) ([]model.Worker, error) {
+	result := []model.Worker{}
+	context, found, err := b.GetContext(contextId)
+	if !found {
+		return nil, fmt.Errorf("Context with id %s does not exists", contextId)
+	}
+	if err != nil {
+		return nil, err
+	}
+	workersKeyPrefix := fmt.Sprintf(contextKeyPattern, contextId)
+	workers, err := getModelList[model.Worker](workersKeyIndexName, b, workersKeyPrefix)
+	if err != nil {
+		return nil, err
+	}
+	for _, worker := range workers {
+		assignedPartitions, err := b.getAssignedPartitions(contextId, worker.ID)
+		if err != nil {
+			return nil, err
+		}
+		if len(assignedPartitions) < context.MaxPartitionsPerWorker {
+			result = append(result, worker)
+		}
+	}
+	return result, nil
+}
+
+func (b *RedisBackend) getAssignedPartitions(contextId, workerId uuid.UUID) ([]model.Partition, error) {
+	result := []model.Partition{}
+	partitionsKeyPrefix := fmt.Sprintf(contextKeyPattern, contextId)
+	partitions, err := getModelList[model.Partition](partitionsKeyIndexName, b, partitionsKeyPrefix)
+	if err != nil {
+		return nil, err
+	}
+	for _, partition := range partitions {
+		if partition.AssignedWorker == workerId {
+			result = append(result, partition)
+		}
+	}
+	return result, nil
+}
+
+func (b *RedisBackend) getAssignedPartitionConfigurations(contextId, workerId uuid.UUID) ([]string, error) {
+	configs := []string{}
+	assignedPartitions, err := b.getAssignedPartitions(contextId, workerId)
+	for _, partition := range assignedPartitions {
+		configs = append(configs, partition.Configuration)
+	}
+	return configs, err
+}
+
+func (b *RedisBackend) addAssignedPartitionConfigurations(contextId uuid.UUID, workers []model.Worker) ([]model.Worker, error) {
+	updatedWorkers := []model.Worker{}
+	for _, worker := range workers {
+		assignedPartitionConfigs, err := b.getAssignedPartitionConfigurations(contextId, worker.ID)
+		if err != nil {
+			log.Printf("Failed getting assigned partition configs for worker %s in context %s: %e", worker.ID, contextId, err)
+			return updatedWorkers, err
+		}
+		worker.PartitionConfigurations = assignedPartitionConfigs
+		updatedWorkers = append(updatedWorkers, worker)
+	}
+	return updatedWorkers, nil
+}
+
+func (b *RedisBackend) countWorkers(contextId uuid.UUID) (int, error) {
+	workersKeyPrefix := fmt.Sprintf(contextKeyPattern, contextId)
+	workers, err := getModelList[model.Worker](workersKeyIndexName, b, workersKeyPrefix)
+	if err != nil {
+		return 0, err
+	}
+	return len(workers), nil
+}
+
+func (b *RedisBackend) countPartitions(contextId uuid.UUID) (int, error) {
+	partitions, err := b.GetPartitions(contextId)
+	if err != nil {
+		return 0, err
+	}
+	return len(partitions), nil
+}
+
+func (b *RedisBackend) partitionToWorkerRatio(contextId uuid.UUID, maxPartitionsPerWorker int) (float64, error) {
+	result := 0.0
+	workerCount, err := b.countWorkers(contextId)
+	if err != nil {
+		return result, err
+	}
+	partitionCount, err := b.countPartitions(contextId)
+	if err != nil {
+		return result, err
+	}
+	if workerCount == 0 {
+		result = float64(partitionCount)
+	} else {
+		result = float64(partitionCount) / float64(workerCount*maxPartitionsPerWorker)
+	}
+	return result, nil
+}
+
 func getModel[M model.Model](keyPattern string, b *RedisBackend, ids ...uuid.UUID) (M, bool, error) {
 	var result M
 	idStrings := uuidsToStrings(ids)
 	stringRep, err := b.redis.Get(ctx, fmt.Sprintf(keyPattern, idStrings...)).Result()
 	if err != nil {
-		log.Println(fmt.Sprintf("error getting model with key %s", fmt.Sprintf(keyPattern, idStrings...)))
+		log.Printf("error getting model with key %s", fmt.Sprintf(keyPattern, idStrings...))
 		return result, false, err
 	}
 	result, err = stringToModel[M](stringRep)
@@ -193,7 +490,7 @@ func getModel[M model.Model](keyPattern string, b *RedisBackend, ids ...uuid.UUI
 
 }
 
-func createModel[M model.Model](model M, indexName, keyPattern string, ttlSeconds int, b *RedisBackend, ids ...uuid.UUID) (M, error) {
+func createOrUpdateModel[M model.Model](model M, indexName, keyPattern string, ttlSeconds int, b *RedisBackend, ids ...uuid.UUID) (M, error) {
 	idStrings := uuidsToStrings(ids)
 	key := fmt.Sprintf(keyPattern, idStrings...)
 	stringRep, err := modelToStr(model)

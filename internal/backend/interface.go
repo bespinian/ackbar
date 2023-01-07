@@ -8,14 +8,16 @@ import (
 type Backend interface {
 	GetContexts() ([]model.Context, error)
 	GetContext(id uuid.UUID) (model.Context, bool, error)
-	CreateContext(name string, leaseTimeSeconds, maxLeasesPerPartition int) (model.Context, error)
+	CreateContext(name string, livenessIntervalSeconds, maxPartitionsPerWorker int) (model.Context, error)
 	DeleteContext(id uuid.UUID) error
 
 	GetPartitions(contextId uuid.UUID) ([]model.Partition, error)
-	AddPartition(contextId uuid.UUID) (model.Partition, error)
+	AddPartition(contextId uuid.UUID, configuration string) (model.Partition, error)
 	DeletePartition(contextId, partitionId uuid.UUID) error
 
-	CreateLease(contextId uuid.UUID) (model.Lease, bool, error)
-	RefreshLease(contextId, partitionId, leaseId uuid.UUID) (model.Lease, bool, error)
-	DeleteLease(contextId, partitionId, leaseId uuid.UUID) error
+	RegisterWorker(contextId uuid.UUID) (model.Worker, error)
+	GetWorkers(contextId uuid.UUID) ([]model.Worker, error)
+	GetWorker(contextId, workerId uuid.UUID) (model.Worker, bool, error)
+	RefreshWorker(contextId, workerId uuid.UUID) (model.Worker, bool, error)
+	DeleteWorker(contextId, workerId uuid.UUID) error
 }
