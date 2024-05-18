@@ -28,7 +28,7 @@ func main() {
 	router.GET(apimodule.WorkersPath, api.GetWorkers)
 	router.PUT(apimodule.WorkerPath, api.PutWorker)
 	router.DELETE(apimodule.WorkerPath, api.DeleteWorker)
-	err := router.Run("localhost:8080")
+	err := router.Run("0.0.0.0:8080")
 	if err != nil {
 		log.Fatalf("Error running http router: %e", err)
 	}

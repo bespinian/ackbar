@@ -12,7 +12,6 @@ import (
 )
 
 func main() {
-
 	landoUrl := os.Getenv("LANDO_URL")
 	contextId := os.Getenv("CONTEXT_ID")
 
@@ -33,7 +32,7 @@ func main() {
 	defer res.Body.Close()
 
 	for {
-		time.Sleep(5 * time.Second)
+		time.Sleep(2 * time.Second)
 		log.Printf("refreshing %s", workerUrl)
 		req, err := http.NewRequest(http.MethodPut, workerUrl, nil)
 		if err != nil {
@@ -44,5 +43,4 @@ func main() {
 			log.Fatalf("Failed to refresh worker: %e", err)
 		}
 	}
-
 }

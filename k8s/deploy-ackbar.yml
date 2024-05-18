@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ackbar
+  namespace: ackbar
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ackbar
+  template:
+    metadata:
+      labels:
+        app: ackbar
+    spec:
+      containers:
+        - name: redis
+          image: bespinian/ackbar:0.0.2
+          ports:
+            - containerPort: 8080
+          env:
+            - name: REDIS_CONNECTION_STRING
+              value: ackbar-redis:6379
