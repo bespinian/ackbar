@@ -14,8 +14,9 @@ spec:
         app: ackbar
     spec:
       containers:
-        - name: redis
+        - name: ackbar
           image: bespinian/ackbar:0.0.2
+          imagePullPolicy: Always
           ports:
             - containerPort: 8080
           env:

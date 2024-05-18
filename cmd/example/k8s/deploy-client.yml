@@ -1,0 +1,24 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: example-client
+  namespace: example-client
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: example-client
+  template:
+    metadata:
+      labels:
+        app: example-client
+    spec:
+      containers:
+        - name: example-client
+          image: bespinian/ackbar-example-client:0.0.1
+          imagePullPolicy: Always
+          env:
+            - name: LANDO_URL
+              value: http://ackbar.ackbar
+            - name: CONTEXT_ID
+              value: 128e4ec8-a632-443d-9051-852c63773da9
