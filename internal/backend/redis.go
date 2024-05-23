@@ -14,13 +14,15 @@ import (
 	redis "github.com/redis/go-redis/v9"
 )
 
-const contextsKeyIndexName = "contexts:index"
-const contextKeyPattern = "contexts:%s"
-const partitionsKeyIndexName = "partitions:index"
-const partitionKeyPattern = "contexts:%s:partitions:%s"
-const workersKeyIndexName = "workers:index"
-const workersKeyPattern = "contexts:%s:workers:%s"
-const workersKeyRegex = `contexts:([a-f|A-F|\d|-]+):workers:([a-f|A-F|\d|-]+)`
+const (
+	contextsKeyIndexName   = "contexts:index"
+	contextKeyPattern      = "contexts:%s"
+	partitionsKeyIndexName = "partitions:index"
+	partitionKeyPattern    = "contexts:%s:partitions:%s"
+	workersKeyIndexName    = "workers:index"
+	workersKeyPattern      = "contexts:%s:workers:%s"
+	workersKeyRegex        = `contexts:([a-f|A-F|\d|-]+):workers:([a-f|A-F|\d|-]+)`
+)
 
 var ctx = context.Background()
 
@@ -84,13 +86,15 @@ func (b *RedisBackend) GetContexts() ([]model.Context, error) {
 	if err != nil {
 		return []model.Context{}, err
 	}
+	updatedContexts := []model.Context{}
 	for _, context := range contexts {
 		err := b.addPartitionToWorkerRatio(&context, context.MaxPartitionsPerWorker)
 		if err != nil {
 			return []model.Context{}, err
 		}
+		updatedContexts = append(updatedContexts, context)
 	}
-	return contexts, nil
+	return updatedContexts, nil
 }
 
 func (b *RedisBackend) addPartitionToWorkerRatio(context *model.Context, maxPartitionsPerWorker int) error {
@@ -372,7 +376,6 @@ func (b *RedisBackend) getUnassignedPartitions(contextId uuid.UUID) ([]model.Par
 		}
 	}
 	return result, nil
-
 }
 
 func (b *RedisBackend) getWorkersWithFreeCapacity(contextId uuid.UUID) ([]model.Worker, error) {
@@ -487,7 +490,6 @@ func getModel[M model.Model](keyPattern string, b *RedisBackend, ids ...uuid.UUI
 		return result, false, err
 	}
 	return result, true, nil
-
 }
 
 func createOrUpdateModel[M model.Model](model M, indexName, keyPattern string, ttlSeconds int, b *RedisBackend, ids ...uuid.UUID) (M, error) {
@@ -521,7 +523,7 @@ func stringToModel[M interface{}](str string) (M, error) {
 }
 
 func modelToStr[M interface{}](context M) (string, error) {
-	var result, err = json.Marshal(context)
+	result, err := json.Marshal(context)
 	if err != nil {
 		return "", err
 	}
