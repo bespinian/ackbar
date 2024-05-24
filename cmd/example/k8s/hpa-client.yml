@@ -1,0 +1,22 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: example-client
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: example-client
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+    - type: External
+      external:
+        metric:
+          name: partition-to-worker-ratio
+          selector:
+            matchLabels:
+              context: 128e4ec8-a632-443d-9051-852c63773da9
+        target:
+          type: Value
+          value: 1
