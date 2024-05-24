@@ -9,6 +9,9 @@ spec:
     name: example-client
   minReplicas: 1
   maxReplicas: 10
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 0
   metrics:
     - type: External
       external:
