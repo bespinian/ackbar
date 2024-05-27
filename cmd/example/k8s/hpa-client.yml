@@ -2,6 +2,7 @@ apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
   name: example-client
+  namespace: example-client
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
@@ -19,7 +20,7 @@ spec:
           name: partition-to-worker-ratio
           selector:
             matchLabels:
-              context: 128e4ec8-a632-443d-9051-852c63773da9
+              context: f3327714-8d22-44ae-b9c1-840544b398b4
         target:
           type: Value
           value: 1
