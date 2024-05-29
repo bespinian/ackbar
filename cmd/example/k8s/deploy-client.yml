@@ -15,10 +15,10 @@ spec:
     spec:
       containers:
         - name: example-client
-          image: bespinian/ackbar-example-client:0.0.1
+          image: bespinian/ackbar-example-client:0.0.2
           imagePullPolicy: Always
           env:
-            - name: LANDO_URL
+            - name: ACKBAR_URL
               value: http://ackbar.ackbar
             - name: CONTEXT_ID
               value: f3327714-8d22-44ae-b9c1-840544b398b4

@@ -1,4 +1,4 @@
-module github.com/bespinian/lando
+module github.com/bespinian/ackbar
 
 go 1.19
 

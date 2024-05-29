@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bespinian/lando/internal/model"
+	"github.com/bespinian/ackbar/internal/model"
 	"github.com/google/uuid"
 	redis "github.com/redis/go-redis/v9"
 )

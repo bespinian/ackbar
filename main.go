@@ -4,8 +4,8 @@ import (
 	"log"
 	"os"
 
-	apimodule "github.com/bespinian/lando/internal/api"
-	"github.com/bespinian/lando/internal/backend"
+	apimodule "github.com/bespinian/ackbar/internal/api"
+	"github.com/bespinian/ackbar/internal/backend"
 	"github.com/gin-gonic/gin"
 )
 

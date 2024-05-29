@@ -5,15 +5,17 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/bespinian/lando/internal/model"
+	"github.com/bespinian/ackbar/internal/model"
 	"github.com/gin-gonic/gin"
 	"github.com/go-http-utils/headers"
 	"github.com/google/uuid"
 )
 
-var PartitionsPath = fmt.Sprintf("%s/%s", ContextPath, "partitions")
-var PartitionIdPlaceholder = ":partitionId"
-var PartitionPath = fmt.Sprintf("%s/%s", PartitionsPath, PartitionIdPlaceholder)
+var (
+	PartitionsPath         = fmt.Sprintf("%s/%s", ContextPath, "partitions")
+	PartitionIdPlaceholder = ":partitionId"
+	PartitionPath          = fmt.Sprintf("%s/%s", PartitionsPath, PartitionIdPlaceholder)
+)
 
 func (a *Api) GetPartitions(c *gin.Context) {
 	contextId := c.Param("contextId")

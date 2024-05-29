@@ -5,16 +5,18 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/bespinian/lando/internal/model"
+	"github.com/bespinian/ackbar/internal/model"
 	"github.com/gin-gonic/gin"
 	"github.com/go-http-utils/headers"
 	"github.com/google/uuid"
 )
 
-var RootPath = "/"
-var ContextsPath = fmt.Sprintf("%s%s", RootPath, "contexts")
-var ContextIdPlaceholder = ":contextId"
-var ContextPath = fmt.Sprintf("%s/%s", ContextsPath, ContextIdPlaceholder)
+var (
+	RootPath             = "/"
+	ContextsPath         = fmt.Sprintf("%s%s", RootPath, "contexts")
+	ContextIdPlaceholder = ":contextId"
+	ContextPath          = fmt.Sprintf("%s/%s", ContextsPath, ContextIdPlaceholder)
+)
 
 func (a *Api) GetContexts(c *gin.Context) {
 	contexts, _ := a.Backend.GetContexts()

@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: ackbar
-          image: bespinian/ackbar:0.0.3
+          image: bespinian/ackbar:0.0.4
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
