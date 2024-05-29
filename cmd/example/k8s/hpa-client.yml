@@ -20,7 +20,7 @@ spec:
           name: partition-to-worker-ratio
           selector:
             matchLabels:
-              context: f3327714-8d22-44ae-b9c1-840544b398b4
+              context: 3c0d1a1d-2e58-4032-a7dd-cf93a3eef4d3
         target:
           type: Value
           value: 1

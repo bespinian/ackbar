@@ -16,5 +16,20 @@ spec:
       containers:
         - name: redis
           image: redis:latest
+          args: ["/usr/local/etc/redis/redis.conf"]
           ports:
             - containerPort: 6379
+          volumeMounts:
+            - name: storage
+              mountPath: /data
+            - name: config
+              mountPath: /usr/local/etc/redis/redis.conf
+              readOnly: true
+      volumes:
+        - name: storage
+          persistentVolumeClaim:
+            claimName: ackbar-redis
+        - name: config
+          configMap:
+            defaultMode: 0666
+            name: ackbar-redis
