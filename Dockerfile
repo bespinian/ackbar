@@ -1,7 +1,11 @@
-FROM golang:1
+FROM golang:1 as build
 WORKDIR /usr/src/app
 COPY . ./
-RUN go build -o ackbar
+RUN CGO_ENABLED=0 GOOS=linux go build -o ackbar
+
+FROM scratch
+
+COPY --from=build /usr/src/app/ackbar /bin/ackbar
 
 EXPOSE 8080
-ENTRYPOINT ["./ackbar"]
+CMD ["/bin/ackbar"]
